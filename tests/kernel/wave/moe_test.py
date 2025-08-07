@@ -9,9 +9,9 @@ import torch
 import wave_lang.kernel as tk
 import wave_lang.kernel.lang as tkl
 from wave_lang.kernel.lang.global_symbols import *
-from .common.utils import (
-    require_e2e,
-)
+#from .common.utils import (
+#    require_e2e,
+#)
 from wave_lang.kernel.wave.utils.run_utils import (
     set_default_run_config,
     enable_scheduling_barriers,
@@ -40,6 +40,23 @@ def silu_and_mul_torch_ref(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor
 
 def silu_and_mul_ref(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     return gate * up / (1 + torch.exp(-gate))
+
+
+def softmax(
+    x: torch.Tensor, dim: int = -1, dtype: torch.dtype = torch.float32
+) -> torch.Tensor:
+    # Convert input to float32 for stable calculations
+    x_float = x.to(dtype)
+
+    # Subtract max for numerical stability
+    max_vals = torch.max(x_float, dim=dim, keepdim=True).values
+    x_exp = torch.exp(x_float - max_vals)
+
+    # Compute softmax
+    sum_exp = torch.sum(x_exp, dim=dim, keepdim=True)
+    result = x_exp / sum_exp
+
+    return result
 
 
 def get_wave_silu_and_mul_kernel(
@@ -85,15 +102,24 @@ def get_wave_gemm_kernel(
     m: int,
     k: int,
     n: int,
+    block_m: int,
+    block_k: int,
+    block_n: int,
     mfma_variant: MMAType,
     datatype: DataType,
+    get_double_gemm: bool,
 ):
+    print(f"M {m} K {k} N {n}")
     gemm, symbols = get_gemm_kernel(
         m,
         k,
         n,
+        block_m,
+        block_k,
+        block_n,
         mfma_variant,
         datatype,
+        get_double_gemm,
     )
     symbols.update(get_default_scheduling_params())
 
@@ -125,18 +151,20 @@ def torch_ref_moe(a, w1, w2, score, topk):
         if mask.sum():
             x = a[mask] @ w1[i].transpose(0, 1)
             d = x.shape[-1] // 2
-            out[mask] = silu_and_mul_ref(x[..., :d], x[..., d:]) @ w2[i].transpose(0, 1)
+            out[mask] = silu_and_mul_torch_ref(x[..., :d], x[..., d:]) @ w2[i].transpose(0, 1)
     return (
         out.view(m, -1, w2.shape[1]) * topk_weight.view(m, -1, 1).to(out.dtype)
     ).sum(dim=1)
 
 
+@torch.compile(  # Requires PyTorch 2.0+
+    fullgraph=False,  # Allow dynamic control flow
+    mode="max-autotune",  # Aggressive optimizations
+)
 def torch_ref_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
     m, k = a.shape
     a = a.view(m, -1, k).repeat(1, topk, 1).reshape(-1, k)  # [m * topk, k]
-    out = torch.zeros(
-        m * topk, w2.shape[1], dtype=a.dtype, device=a.device
-    )  # [m * topk, k]
+    out = torch.zeros(m * topk, w2.shape[1], dtype=a.dtype, device=a.device)  # [m * topk, k]
     score = torch.softmax(score, dim=-1, dtype=torch.float32)  # [m, e]
     topk_weight, topk_ids = torch.topk(score, topk)
     topk_weight = topk_weight.view(-1)  # [m * topk]
@@ -147,9 +175,11 @@ def torch_ref_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
         )  # num_selected (which of the m * topk tokens selected this expert)
         if mask.sum():
             # Split into gate and up projections
-            gate = F.silu(a[mask] @ w1_gate[i].transpose(0, 1))  # [num_selected, n]
+            gate = a[mask] @ w1_gate[i].transpose(0, 1) # [num_selected, n]
             up = a[mask] @ w1_up[i].transpose(0, 1)  # [num_selected, n]
-            out[mask] = (gate * up) @ w2[i].transpose(0, 1)  # [num_selected, k]
+            lhs = torch.zeros(m, w2.shape[-1], dtype=a.dtype, device=a.device)
+            lhs = silu_and_mul_torch_ref(gate, up)
+            out[mask] = lhs @ w2[i].transpose(0, 1)  # [num_selected, k]
     return (
         out.view(m, -1, w2.shape[1]) * topk_weight.view(m, -1, 1).to(out.dtype)
     ).sum(
@@ -157,24 +187,7 @@ def torch_ref_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
     )  # [m, k]
 
 
-def softmax(
-    x: torch.Tensor, dim: int = -1, dtype: torch.dtype = torch.float32
-) -> torch.Tensor:
-    # Convert input to float32 for stable calculations
-    x_float = x.to(dtype)
-
-    # Subtract max for numerical stability
-    max_vals = torch.max(x_float, dim=dim, keepdim=True).values
-    x_exp = torch.exp(x_float - max_vals)
-
-    # Compute softmax
-    sum_exp = torch.sum(x_exp, dim=dim, keepdim=True)
-    result = x_exp / sum_exp
-
-    return result
-
-
-def tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
+def tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk, block_m=64, block_n=64, block_k=64):
     B, D = a.shape
     a = a.view(B, -1, D).repeat(1, topk, 1).reshape(-1, D)
     out = torch.zeros(B * topk, w2.shape[1], dtype=a.dtype, device=a.device)
@@ -200,13 +213,19 @@ def tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
                 m,  # M
                 w1_gate[i].shape[-1],  # K
                 w1_gate[i].shape[0],  # N
+                block_m,
+                block_n,
+                block_k,
                 MMAType.F32_16x16x16_F16,
                 dtype,
+                False,
             )
+#           gemm_kernel_gate_up(a[mask], w1_gate[i], w1_up[i], gate, up)
             gemm_kernel_gate_up(a[mask], w1_gate[i], gate)
             gemm_kernel_gate_up(a[mask], w1_up[i], up)
             gate = gate.to(dtype=a.dtype)
             up = up.to(dtype=a.dtype)
+#           check_individual_kernels = True
             if check_individual_kernels:
                 torch.testing.assert_close(
                     gate,
@@ -223,6 +242,7 @@ def tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
                     check_device=False,
                 )
             lhs = torch.zeros(m, w2.shape[-1], dtype=a.dtype, device=a.device)
+          # lhs = silu_and_mul_torch_ref(gate, up)
             lhs = silu_and_mul(gate, up)
             rhs = w2[i]
             partial_out = torch.zeros(
@@ -232,15 +252,18 @@ def tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk):
                 m,  # M
                 w2[i].shape[-1],  # K
                 w2[i].shape[0],  # N
+                block_m,
+                block_n,
+                block_k,
                 MMAType.F32_16x16x16_F16,
                 dtype,
+                False,
             )
             gemm_kernel_out(lhs, rhs, partial_out)
             partial_out = partial_out.to(dtype=a.dtype)
-            ref = lhs @ rhs.transpose(0, 1)
             if check_individual_kernels:
                 torch.testing.assert_close(
-                    partial_out, ref, rtol=rtol, atol=atol, check_device=False
+                    partial_out, lhs @ rhs.transpose(0, 1), rtol=rtol, atol=atol, check_device=False
                 )
             out[mask] = partial_out
     return (
@@ -257,7 +280,7 @@ dtypes = [torch.float16, torch.bfloat16]
 rtol, atol = 1e-1, 1e-2
 
 
-@require_e2e
+#@require_e2e
 @pytest.mark.parametrize("m", m_values)
 @pytest.mark.parametrize("n", n_values)
 @pytest.mark.parametrize("k", k_values)
@@ -299,3 +322,126 @@ def testReferenceMoe(
     # The implementation in Wave should also work.
     tkw_output = tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk)
     torch.testing.assert_close(tkw_output, ref_output, rtol=rtol, atol=atol)
+
+
+from time import perf_counter
+from torch.autograd import DeviceType
+from torch.profiler import profile as torch_profile, ProfilerActivity
+import numpy as np
+
+m_values = [1, 33, 64, 222]
+m_values = [16384 * 4]
+m_values = [5120]
+n_values = [128, 1024]
+n_values = [8192]
+k_values = [128, 511, 1024]
+k_values = [5120]
+e_values = [8, 64]
+e_values = [16]
+topk_values = [2, 6]
+topk_values = [2]
+dtypes = [torch.float16, torch.bfloat16]
+dtypes = [torch.float16]
+block_m_values = [32, 64, 128, 256]
+block_n_values = [32, 64, 128, 256]
+block_k_values = [32, 64, 128, 256]
+
+block_m_values = [32]
+block_n_values = [64]
+block_k_values = [16]
+
+block_m_values = [32]
+block_n_values = [128]
+block_k_values = [32]
+
+# Best, slightly better than the above 2
+block_m_values = [32]
+block_n_values = [64]
+block_k_values = [32]
+
+block_m_values = [64]
+block_n_values = [128]
+block_k_values = [32]
+
+# llama4
+# ~2xx for all
+block_m_values = [64]
+block_n_values = [64]
+block_k_values = [64]
+
+# 2xx, 3xx but also 19x
+block_m_values = [128]
+block_n_values = [64]
+block_k_values = [64]
+
+block_m_values = [128]
+block_n_values = [32]
+block_k_values = [64]
+
+for m in m_values:
+    for n in n_values:
+        for k in k_values:
+            for e in e_values:
+                for topk in topk_values:
+                    for dtype in dtypes:
+                        for block_m in block_m_values:
+                            for block_n in block_n_values:
+                                for block_k in block_k_values:
+                                    device = "cuda"
+                                    a = torch.rand((m, k), dtype=dtype, device=device)
+                                    w1 = torch.rand((e, 2 * n, k), dtype=dtype, device=device)
+                                    w2 = torch.rand((e, k, n), dtype=dtype, device=device)
+                                    score = torch.rand((m, e), dtype=dtype, device=device)
+                                    w1_gate = w1[:, :n, :]  # First half for gate
+                                    w1_up = w1[:, n:, :]  # Second half for up projection
+
+                                    num_its = 15
+                                    print_profile = True
+                                    row_limit = 20
+
+            #                       print(f"Num tokens {m}")
+            #                       print(f"Num experts {e}")
+            #                       print(f"Top K {topk}")
+
+              #                     start = perf_counter()
+              #                     ref_split_output = torch_ref_moe_split_w1(a, w1_gate, w1_up, w2, score, topk)
+
+                                    tkw_output = tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk, block_m, block_n, block_k)
+              #                     tkw_output = tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk)
+
+            # #                     ref_output = torch_ref_moe(a, w1, w2, score, topk)
+              #                     torch.cuda.synchronize()  # Wait for all GPU operations to complete
+              #                     end = perf_counter()
+              #                     print(f"Execution took {end - start:.6f} seconds")
+
+#                                   torch.cuda.synchronize()
+#                                   with torch_profile(
+#                                       activities=[ProfilerActivity.CUDA],
+#                                       # Discard 15 iterations to gain stability.
+#                                       schedule=torch.profiler.schedule(
+#                                           wait=5, warmup=5, active=num_its, skip_first=5
+#                                       ),
+#                                     # record_shapes=True,
+#                                   ) as prof:
+#                                       for i in range(num_its + 15):
+#                                           ref_split_output = torch_ref_moe_split_w1(a, w1_gate, w1_up, w2, score, topk, block_m, block_n, block_k)
+#                                         # ref_output = torch_ref_moe(a, w1, w2, score, topk)
+#                                         # tkw_output = tkw_moe_split_w1(a, w1_gate, w1_up, w2, score, topk)
+#                                           torch.cuda.synchronize()
+#                                           prof.step()
+#                                   events = prof.key_averages(group_by_input_shape=True)
+#                                   if print_profile:
+#                                       print(
+#                                           events.table(sort_by="cuda_time_total", row_limit=row_limit),
+#                                           flush=True,
+#                                       )
+#                                       print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+#                                   # Return the average device time in milliseconds
+#                                   print(np.array(
+#                                       [
+#                                           event.self_device_time_total
+#                                           for event in events
+#                                           if event.device_type == DeviceType.CUDA and ("emcpy" not in event.key)
+#                                       ]
+#                                   ).sum() / (num_its * 1000.0))
+

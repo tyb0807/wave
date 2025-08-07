@@ -18,8 +18,12 @@ def get_gemm_kernel(
     m: int,
     k: int,
     n: int,
+    block_m: int,
+    block_k: int,
+    block_n: int,
     mfma_variant: MMAType,
     datatype: DataType,
+    get_double_gemm: bool,
 ):
     assert datatype in [tkl.f16, tkl.bf16], f"Unsupported datatype: {datatype}"
 
@@ -53,6 +57,40 @@ def get_gemm_kernel(
     ]
 
     @tkw.wave(constraints)
+    def double_gemm(
+        a: tkl.Memory[M, K, ADDRESS_SPACE, datatype],
+        b1: tkl.Memory[N, K, ADDRESS_SPACE, datatype],
+        b2: tkl.Memory[N, K, ADDRESS_SPACE, datatype],
+        c1: tkl.Memory[M, N, GLOBAL_ADDRESS_SPACE, tkl.f32],
+        c2: tkl.Memory[M, N, GLOBAL_ADDRESS_SPACE, tkl.f32],
+    ):
+        c1_reg = tkl.Register[M, N, tkl.f32](0.0)
+        c2_reg = tkl.Register[M, N, tkl.f32](0.0)
+
+        # This microkernel encodes the fact that if the iterate
+        # dimension were tiled, then we would need to materialize a loop.
+        @tkw.iterate(K, init_args=[c1_reg, c2_reg])
+        def repeat(
+            acc1: tkl.Register[M, N, tkl.f32],
+            acc2: tkl.Register[M, N, tkl.f32],
+        ) -> (
+            tkl.Register[M, N, tkl.f32],
+            tkl.Register[M, N, tkl.f32],
+        ):
+            a_reg = tkw.read(a)
+            b1_reg = tkw.read(b1)
+            b2_reg = tkw.read(b2)
+
+            acc1 = tkw.mma(a_reg, b1_reg, acc1)
+            acc2 = tkw.mma(a_reg, b2_reg, acc2)
+            return acc1, acc2
+
+        # repeat represents the results of the loop
+        res1, res2 = repeat
+        tkw.write(res1, c1)
+        tkw.write(res2, c2)
+
+    @tkw.wave(constraints)
     def gemm(
         a: tkl.Memory[M, K, ADDRESS_SPACE, datatype],
         b: tkl.Memory[N, K, ADDRESS_SPACE, datatype],
@@ -75,15 +113,15 @@ def get_gemm_kernel(
 
     hyperparams = {
         ADDRESS_SPACE: SHARED_ADDRESS_SPACE,
-        BLOCK_M: 64,
-        BLOCK_N: 64,
-        BLOCK_K: 32,
+        BLOCK_M: block_m,
+        BLOCK_N: block_n,
+        BLOCK_K: block_k,
         M: m,
         N: n,
         K: k,
     }
 
-    return gemm, hyperparams
+    return double_gemm if get_double_gemm else gemm, hyperparams
 
 
 def get_silu_and_mul_kernel(
