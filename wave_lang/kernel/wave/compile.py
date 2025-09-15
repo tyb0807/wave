@@ -29,6 +29,11 @@ from wave_lang.runtime.launch import Launchable
 from .profiling import benchmark_module
 from .debug_log_hoist import DebugArgInfo
 import iree.runtime as rt
+from ..ops.wave_ops import (
+    Read,
+    Write,
+    get_custom,
+)
 
 
 class WaveKernel:
@@ -331,6 +336,7 @@ def wave_compile(options: WaveCompileOptions, kernel: "LaunchableWave") -> WaveK
         # is for tuning where each kernel is different from the others and so we
         # don't want to cache the kernel in that case.
         trace = kernel._trace()
+      # b
 
         # Disable async dispatch for benchmarking.
         is_async = options.iree_launch_async and not options.run_bench
@@ -368,6 +374,39 @@ def wave_compile(options: WaveCompileOptions, kernel: "LaunchableWave") -> WaveK
 
         if options.override_mlir:
             asm = options.override_mlir
+
+        print("GRAPH ")
+        print(graph.region_graph)
+        print(graph.region_graph.subgraphs)
+        for name, subgraph in graph.region_graph.subgraphs.items():
+            print("SUBGRAPH ", name)
+            for i, node in enumerate(subgraph.nodes):
+                if isinstance(get_custom(node), (Read, Write)):
+                    print(f"Node {i}: {node}")
+                    print(f"  Name: {node.name}")
+                    print(f"  Op: {node.op}")
+                    print(f"  Target: {node.target}")
+                    for arg in node.args:
+                        print(f"  Args: {arg} {type(arg)}")
+                    print(f"  Kwargs: {node.kwargs}")
+                    print(f"  Users: {len(list(node.users))}")
+                    print("---")
+
+        print("TRACE ")
+        print(trace.region_graph)
+        print(trace.region_graph.subgraphs)
+        for name, subgraph in trace.region_graph.subgraphs.items():
+            print("SUBGRAPH ", name)
+            for i, node in enumerate(subgraph.nodes):
+                if isinstance(get_custom(node), (Read, Write)):
+                    print(f"Node {i}: {node}")
+                    print(f"  Name: {node.name}")
+                    print(f"  Op: {node.op}")
+                    print(f"  Target: {node.target}")
+                    print(f"  Args: {node.args}")
+                    print(f"  Kwargs: {node.kwargs}")
+                    print(f"  Users: {len(list(node.users))}")
+                    print("---")
 
         if options.compile_to_mlir:
             return cls(

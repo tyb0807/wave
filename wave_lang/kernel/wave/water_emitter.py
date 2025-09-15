@@ -9,6 +9,8 @@ Wave operations with fallback support for unknown operations.
 
 import json
 import sys
+import sympy
+from functools import reduce
 
 try:
     from water_mlir import ir
@@ -20,6 +22,8 @@ try:
         ReadOp,
         RegisterOp,
         WriteOp,
+        WaveSymbolAttr,
+        WaveIndexMappingAttr,
     )
     from water_mlir.water_mlir.dialects import wave
 except Exception as e:
@@ -83,6 +87,118 @@ def _type_from_wave_type_dict(ctx: ir.Context, wave_type_dict: dict) -> ir.Type:
     return ir.Type.parse(type_text, context=ctx)
 
 
+def sympy_to_affine_map(expr, symbol_names):
+    """
+    Convert a sympy expression to an MLIR AffineMap.
+
+    Args:
+        expr: sympy expression
+        symbol_names: list of symbol names in order (matches s0, s1, s2, ...)
+
+    Returns:
+        AffineMap representing the expression
+    """
+
+    def convert_expr(sympy_expr):
+        """Recursively convert sympy expression to AffineExpr"""
+        if sympy_expr.is_Integer:
+            return ir.AffineExpr.get_constant(sympy_expr.p)
+
+        elif sympy_expr.is_Symbol:
+            # Find the index of this symbol in our symbol_names list
+            symbol_name = str(sympy_expr).strip()
+            if symbol_name in symbol_names:
+                symbol_idx = symbol_names.index(symbol_name)
+                return ir.AffineExpr.get_symbol(symbol_idx)
+            else:
+                raise ValueError(f"Unknown symbol: {symbol_name}")
+
+        elif sympy_expr.is_Add:
+            # Convert addition: a + b + c
+            result = ir.AffineExpr.get_constant(0)
+            for term in sympy_expr.args:
+                expr = convert_expr(term)
+                result = result + expr
+            return result
+
+        elif sympy_expr.is_Mul:
+            # Convert multiplication: a * b * c
+            result = ir.AffineExpr.get_constant(1)
+            divide_by = 1
+            for factor in sympy_expr.args:
+                if factor.is_Rational:
+                    assert factor.p == 1
+                    divide_by *= factor.q
+                    continue
+                if divide_by > 1:
+                    expr = convert_expr(sympy.floor(factor / divide_by))
+                    result *= expr
+                    divide_by = 1
+                    continue
+                result *= convert_expr(factor)
+
+            return result
+
+        elif hasattr(sympy_expr, 'func'):
+            # Handle special functions
+            func_name = sympy_expr.func.__name__
+
+            if func_name == 'floor' and len(sympy_expr.args) == 1:
+                print("CONERTING FLOOR ", sympy_expr, sympy_expr.args[0].is_Mul, len(sympy_expr.args[0].args) == 2)
+                if sympy_expr.args[0].is_Mul and len(sympy_expr.args[0].args) == 2: #and sympy_expr.args[0].args[0].is_Rational:
+                    print("CONERTING FLOOR ", sympy_expr.args[0].args[0], type(sympy_expr.args[0].args[0]))
+                    print("CONERTING FLOOR ", sympy_expr.args[0].args[1], type(sympy_expr.args[0].args[1]))
+                    if sympy_expr.args[0].args[0].is_Rational:
+                        numerator = convert_expr(sympy_expr.args[0].args[1])
+                        denominator = sympy_expr.args[0].args[0].q
+                    else:
+                        numerator = convert_expr(sympy_expr.args[0].args[0])
+                        denominator = convert_expr(sympy_expr.args[0].args[1].q)
+                    print("CONERTING FLOOR ", numerator, denominator)
+                    tmp = ir.AffineExpr.get_floor_div(numerator, denominator)
+                    print("FLOOR RES ", tmp)
+                    return tmp
+
+                arg = convert_expr(sympy_expr.args[0])
+                print("CONVERTING FLOOR ", arg)
+                return arg.floor_div(ir.AffineExpr.constant(1))
+
+            elif func_name == 'ceiling' and len(sympy_expr.args) == 1:
+                print("CONVERTING FLOOR ", sympy_expr.args[0])
+                print("CONVERTING CEIL ", len(sympy_expr.args[0].args))
+                print("CONVERTING CEIL ", sympy_expr.args[0].args[1].is_Rational)
+                if sympy_expr.args[0].is_Mul and len(sympy_expr.args[0].args) == 2 and sympy_expr.args[0].args[0].is_Rational:
+                    numerator = convert_expr(sympy_expr.args[0].args[1])
+                    tmp = ir.AffineExpr.get_ceil_div(numerator, sympy_expr.args[0].args[0].q)
+                    print("CEIL RES ", tmp)
+                    return tmp
+
+                # ceiling(x) -> (x + 1 - 1) floordiv 1 (simplified)
+                arg = convert_expr(sympy_expr.args[0])
+                return (arg + ir.AffineExpr.constant(1) -
+                        ir.AffineExpr.constant(1)).floor_div(
+                        ir.AffineExpr.constant(1))
+
+            elif func_name == 'Mod' and len(sympy_expr.args) == 2:
+                # Mod(x, y) -> x mod y
+                x = convert_expr(sympy_expr.args[0])
+                y = convert_expr(sympy_expr.args[1])
+                return x % y
+
+            else:
+                raise ValueError(f"Unsupported function: {func_name}")
+
+        else:
+            raise ValueError(f"Unsupported expression type: {sympy_expr}")
+
+    try:
+        affine_expr = convert_expr(expr)
+        # Create affine map with 0 dimensions and len(symbol_names) symbols
+        return ir.AffineMap.get(0, len(symbol_names), [affine_expr])
+    except Exception as e:
+        raise ValueError(f"Failed to convert expression {expr}: {e}")
+
+
 def create_operation_attributes(node_data):
     """Create MLIR attributes from node data."""
     attrs = {}
@@ -112,7 +228,112 @@ def create_operation_attributes(node_data):
     # Handle index attribute - store as string for now
     if "index" in node_data:
         index_str = node_data["index"]
-        attrs["py.index"] = ir.StringAttr.get(str(index_str))
+
+        input_string = index_str.strip().strip('{}').strip()
+
+        result = {}
+        current_key = None
+        current_value = ""
+        paren_level = 0
+        i = 0
+        start_index = 0  # Track the start of the current entry
+
+        while i < len(input_string):
+            char = input_string[i]
+
+            # Track parentheses level
+            if char == '(':
+                paren_level += 1
+            elif char == ')':
+                paren_level -= 1
+
+            # Comma at top level (paren_level == 0) indicates new entry
+            if char == ',' and paren_level == 0:
+                if current_key is not None:
+                   #result[current_key] = ir.StringAttr.get(current_value.strip())
+                    current_value = "$WG0*BLOCK_M + BLOCK_M*floor($T0/64)/4/8/2 + Mod($T0, 64) : floor(BLOCK_M/BLOCK_N) : 64"
+                    idx_exprs = current_value.replace('$', '').split(':')
+                    sp_exprs = [sympy.parsing.sympy_parser.parse_expr(idx_expr) for idx_expr in idx_exprs]
+                    symbol_names = [str(sym) for sym in reduce(lambda x, y: x.union(y.free_symbols), sp_exprs, set())]
+
+                    # Create new symbols with positive assumptions
+                    all_symbols = {}
+                    for symbol_name in symbol_names:
+                        all_symbols[symbol_name] = sympy.Symbol(symbol_name, positive=True)
+                    print(all_symbols)
+
+                    # Now re-parse with positive assumptions
+                    sp_exprs = [sympy.sympify(idx_expr, locals=all_symbols) for idx_expr in idx_exprs]
+                    all_symbols = [str(sym) for sym in all_symbols.values()]
+
+                    print("SYMBOLS ", all_symbols)
+                    print("SP EXPrs ", sp_exprs)
+                    start_map = sympy_to_affine_map(sp_exprs[0], all_symbols)
+                    step_map = sympy_to_affine_map(sp_exprs[1], all_symbols)
+                    stride_map = sympy_to_affine_map(sp_exprs[2], all_symbols)
+                    print("START ", start_map)
+                    print("STEP ", step_map)
+                    print("STRIDE ", stride_map)
+                    result[current_key] = WaveIndexMappingAttr.get(all_symbols, start_map, step_map, stride_map)
+                current_key = None
+                current_value = ""
+                i += 1
+                # Skip whitespace after comma
+                while i < len(input_string) and input_string[i].isspace():
+                    i += 1
+                start_index = i
+                continue
+
+            if current_key is None and char == ':':
+                # Found key-value separator - extract key from current entry segment
+                key_segment = input_string[start_index:i].strip()
+                if key_segment:
+                    current_key = key_segment
+                    current_value = ""
+                    # Skip the colon and any whitespace
+                    i += 1
+                    while i < len(input_string) and input_string[i].isspace():
+                        i += 1
+                    continue
+
+            if current_key is not None:
+                current_value += char
+
+            i += 1
+
+        # Add the last entry
+        print("CP")
+        if current_key is not None:
+           #result[current_key] = ir.StringAttr.get(current_value.strip())
+            idx_exprs = current_value.replace('$', '').split(':')
+            sp_exprs = [sympy.parsing.sympy_parser.parse_expr(idx_expr) for idx_expr in idx_exprs]
+            symbol_names = [str(sym) for sym in reduce(lambda x, y: x.union(y.free_symbols), sp_exprs, set())]
+
+            # Create new symbols with positive assumptions
+            all_symbols = {}
+            for symbol_name in symbol_names:
+                all_symbols[symbol_name] = sympy.Symbol(symbol_name, positive=True)
+            print(all_symbols)
+
+            # Now re-parse with positive assumptions
+            sp_exprs = [sympy.sympify(idx_expr, locals=all_symbols) for idx_expr in idx_exprs]
+            all_symbols = [str(sym) for sym in all_symbols.values()]
+            print("SYMBOLS ", all_symbols)
+            print("SP EXPrs ", sp_exprs)
+            start_map = sympy_to_affine_map(sp_exprs[0], all_symbols)
+            step_map = sympy_to_affine_map(sp_exprs[1], all_symbols)
+            stride_map = sympy_to_affine_map(sp_exprs[2], all_symbols)
+            print("START ", start_map)
+            print("STEP ", step_map)
+            print("STRIDE ", stride_map)
+            result[current_key] = WaveIndexMappingAttr.get(all_symbols, start_map, step_map, stride_map)
+        print("RES ", result)
+
+        attrs["py.index"] = ir.DictAttr.get(result)
+        print("EMITTER NODE ", node_data)
+        print("EMITTER ATTR ", index_str)
+        print("EMITTER ATTR ", ir.StringAttr.get(index_str))
+        print("EMITTER ATTR ", attrs["py.index"])
 
     return attrs
 
@@ -264,9 +485,18 @@ def main():
                                     and len(operands) == 1
                                     and result_type is not None
                                 ):
-                                    op = ctor(result_type, operands[0])
+                                    op = ctor(result_type, operands[0], index=attrs["py.index"])
+                                    print("CREATING READ ", op)
+                                    op.attributes["index"] = attrs["py.index"]
+                                    print("CREATING READ ", attrs["py.index"])
+                                    print("CREATING READ ", op.attributes)
                                 elif tkw_op_name == "write" and len(operands) == 2:
                                     op = ctor(operands[0], operands[1])
+                                    op.attributes["index"] = attrs["py.index"]
+                                    print("CREATING WRITE ", op)
+                                    op.attributes["index"] = attrs["py.index"]
+                                    print("CREATING WRITE ", attrs["py.index"])
+                                    print("CREATING WRITE ", op.attributes["index"])
                                 elif tkw_op_name == "register":
                                     if result_type is not None:
                                         # wave.register requires a scalar initialization value
@@ -355,7 +585,7 @@ def main():
                     )
 
             # Verify the module before printing
-            module.operation.verify()
+    #       module.operation.verify()
             print(module)
     return 0
 

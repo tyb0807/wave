@@ -813,7 +813,15 @@ def handle_read(emitter: WaveEmitter, node: fx.Node):
         start_indices, start_indices_wg, start_indices_th = _build_start_indices(
             emitter, index
         )
+        print(index)
+        for i in start_indices:
+            print(str(i))
+        for i in start_indices_wg:
+            print(str(i))
+        for i in start_indices_th:
+            print(str(i))
         mask = _build_mask(emitter, index, elements_per_thread, bounds)
+        print(mask)
         result = _create_vec_read_write(
             emitter,
             input_shape,

@@ -244,6 +244,7 @@ def emit_wave_dialect(
     if not child.exists():
         raise RuntimeError(f"water emitter helper not found: {child}")
 
+    print("MLIR CONVERTER ", payload)
     proc = subprocess.run(
         [sys.executable, str(child)],
         input=json.dumps(payload),

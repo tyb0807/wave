@@ -349,6 +349,9 @@ class LaunchableWave(Launchable):
 
             with region_graph.subtracer() as subtracer:
                 root_name, _ = subtracer.trace(self._f)
+                print("_trace ", subtracer)
+                print("_trace ", region_graph)
+                print("_trace ", root_name)
                 trace = CapturedTrace(region_graph, root_name)
 
         return trace
