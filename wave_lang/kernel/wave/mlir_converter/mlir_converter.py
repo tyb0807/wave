@@ -58,11 +58,27 @@ def emit_wave_dialect(
     if test_diagnostic_emission:
         args.append("--test-diagnostic-emission")
 
+    # Set up environment for water_emitter subprocess
+    import os
+    env = os.environ.copy()
+
+    # Ensure Water Python packages are in PYTHONPATH (preserve existing PYTHONPATH)
+    water_python_path = "/home/sontuavu/wave/water/build/python_packages"
+    current_pythonpath = env.get("PYTHONPATH", "")
+
+    # Only add water path if it's not already in PYTHONPATH and exists
+    if os.path.exists(water_python_path) and water_python_path not in current_pythonpath:
+        if current_pythonpath:
+            env["PYTHONPATH"] = f"{current_pythonpath}:{water_python_path}"
+        else:
+            env["PYTHONPATH"] = water_python_path
+
     proc = subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
 
     output, err = proc.communicate(
@@ -75,6 +91,10 @@ def emit_wave_dialect(
             }
         )
     )
+
+    # Print stderr for debugging (contains our normal form debug messages)
+    if err:
+        print(f"water_emitter stderr: {err.decode('utf-8')}", file=sys.stderr)
 
     if proc.returncode != 0:
         raise RuntimeError(

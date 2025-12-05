@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -54,6 +55,7 @@ int main(int argc, char **argv) {
   mlir::registerConvertAMDGPUToROCDLPass();
   mlir::registerConvertGpuOpsToROCDLOpsPass();
   mlir::registerGpuROCDLAttachTarget();
+  mlir::registerConvertVectorToLLVMPass();
   mlir::registerGpuToLLVMConversionPass();
   mlir::registerReconcileUnrealizedCastsPass();
   mlir::registerGpuModuleToBinaryPass();
@@ -68,6 +70,7 @@ int main(int argc, char **argv) {
       mlir::amdgpu::AMDGPUDialect,
       mlir::arith::ArithDialect,
       mlir::cf::ControlFlowDialect,
+      mlir::complex::ComplexDialect,
       mlir::func::FuncDialect,
       mlir::gpu::GPUDialect,
       mlir::memref::MemRefDialect,
@@ -79,6 +82,7 @@ int main(int argc, char **argv) {
 
   mlir::arith::registerConvertArithToLLVMInterface(registry);
   mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
+  mlir::registerConvertComplexToLLVMInterface(registry);
   mlir::registerConvertFuncToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);

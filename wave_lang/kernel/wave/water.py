@@ -421,6 +421,7 @@ def water_lowering_pipeline(module: Module, options: WaveCompileOptions) -> Modu
         ("convert-amdgpu-to-rocdl", {"chipset": target_chip}),
         ("convert-gpu-to-rocdl", {"use-bare-ptr-memref-call-conv": "1"}, "gpu.module"),
         ("rocdl-attach-target", {"chip": target_chip, "O": llvm_opt_level}),
+        "convert-vector-to-llvm",
         ("gpu-to-llvm", {"use-bare-pointers-for-kernels": "1"}),
         "reconcile-unrealized-casts",
         *add_opt(canonicalize_cse),
@@ -435,14 +436,15 @@ def water_lowering_pipeline(module: Module, options: WaveCompileOptions) -> Modu
         args.append("--mlir-print-ir-after-all")
 
     try:
-        result = subprocess.check_output(
+        result = subprocess.run(
             args,
             input=mlir_asm,
             text=True,
+            capture_output=True,
+            check=True
         )
+        with module.context:
+            return Module.parse(result.stdout)
     except subprocess.CalledProcessError as e:
-        error_msg = f"Subprocess failed with return code {e.returncode}."
+        error_msg = f"Subprocess failed with return code {e.returncode}.\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}"
         raise RuntimeError(error_msg) from e
-
-    with module.context:
-        return Module.parse(result)

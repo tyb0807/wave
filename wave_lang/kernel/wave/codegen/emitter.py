@@ -249,7 +249,7 @@ class WaveEmitter:
         symbol = FlatSymbolRefAttr.get(func_op.sym_name.value)
         return func_op, symbol
 
-    def emit_host_func(self, kernel_func: Operation) -> Operation:
+    def emit_host_func(self, kernel_func: Operation, preserve_kernel_signature: bool = False) -> Operation:
         # TODO: kernel bindings order may not be the same as the kernel function
         # arguments order, so map kernel order to host function arguments order.
         binding_map = {}
@@ -285,9 +285,19 @@ class WaveEmitter:
             # Scalars are passed as is.
             return binding.as_mlir_type()
 
-        arg_types = [abi_type(b) for b in bindings]
+        if preserve_kernel_signature:
+            # Use original kernel function's argument types
+            original_func_type = kernel_func.type
+            gpu_arg_types = original_func_type.inputs
+            gpu_ftype = FunctionType.get(gpu_arg_types, [])
+        else:
+            # Use converted 0D memref types (normal case)
+            gpu_arg_types = [abi_type(b) for b in bindings]
+            gpu_ftype = FunctionType.get(gpu_arg_types, [])
 
-        ftype = FunctionType.get(arg_types, [])
+        # Host function always uses 0D memref ABI for simplicity
+        host_arg_types = [abi_type(b) for b in bindings]
+
         locs = [a.location for a in kernel_func.body.blocks[0].arguments]
 
         gpu_module = gpu_d.module("gpu_module")
@@ -298,33 +308,54 @@ class WaveEmitter:
         with InsertionPoint(module_block), Location.name("wave-generated gpu module"):
             # TODO: GPUFuncOp doesn't seem to have a convenoent contructor yet
             kernel_func_wrapper = gpu_d.GPUFuncOp(
-                TypeAttr.get(ftype), sym_name=self.kernel_name, kernel=True
+                TypeAttr.get(gpu_ftype), sym_name=self.kernel_name, kernel=True
             )
 
         new_kernel_entry_block = kernel_func_wrapper.body.blocks.append(
-            *arg_types,
+            *gpu_arg_types,
             arg_locs=locs,
         )
 
-        # Inline the kernel function into the gpu module function body and erase the original function
-        with (
-            InsertionPoint(new_kernel_entry_block),
-            Location.name("wave-generated kernel function"),
-        ):
-            # Move operations except terminator
-            ops_to_move = list(kernel_func.entry_block)[:-1]
-            for op in ops_to_move:
-                op.detach_from_parent()
-                new_kernel_entry_block.append(op)
-
-            # Replace all uses of old arguments
-            for old_arg, new_value in zip(
-                kernel_func.entry_block.arguments, new_kernel_entry_block.arguments
+        if preserve_kernel_signature:
+            # For override MLIR: keep original kernel signature, just move it to GPU module
+            with (
+                InsertionPoint(new_kernel_entry_block),
+                Location.name("wave-generated kernel function"),
             ):
-                old_arg.replace_all_uses_with(new_value)
+                # Copy operations without modifying arguments
+                ops_to_move = list(kernel_func.entry_block)[:-1]
+                for op in ops_to_move:
+                    op.detach_from_parent()
+                    new_kernel_entry_block.append(op)
 
-            gpu_d.return_([])
-            kernel_func.erase()
+                # Replace all uses of old arguments with new arguments
+                for old_arg, new_arg in zip(
+                    kernel_func.entry_block.arguments, new_kernel_entry_block.arguments
+                ):
+                    old_arg.replace_all_uses_with(new_arg)
+
+                gpu_d.return_([])
+                kernel_func.erase()
+        else:
+            # Normal case: inline kernel function into GPU module with ABI conversion
+            with (
+                InsertionPoint(new_kernel_entry_block),
+                Location.name("wave-generated kernel function"),
+            ):
+                # Move operations except terminator
+                ops_to_move = list(kernel_func.entry_block)[:-1]
+                for op in ops_to_move:
+                    op.detach_from_parent()
+                    new_kernel_entry_block.append(op)
+
+                # Replace all uses of old arguments (converts 2D memrefs to 0D memrefs)
+                for old_arg, new_value in zip(
+                    kernel_func.entry_block.arguments, new_kernel_entry_block.arguments
+                ):
+                    old_arg.replace_all_uses_with(new_value)
+
+                gpu_d.return_([])
+                kernel_func.erase()
 
         # Declare runtime functions
         i32 = IntegerType.get_signless(32)
@@ -392,7 +423,81 @@ class WaveEmitter:
 
             # Populate launch arguments
             launch_args = []
-            for binding, dst_type in zip(bindings, arg_types):
+
+            if preserve_kernel_signature:
+                # For override MLIR: convert 1D buffer to original memref types
+                for binding, dst_type in zip(bindings, gpu_arg_types):
+                    if binding.binding_type == BindingType.KERNEL_BUFFER:
+                        arg = func_args[binding_map[id(binding)]]
+                        # Extract buffer from PyObject
+                        buffer = func_d.call(
+                            get_buffer_func.type.results, get_buffer_func_symbol, [arg]
+                        )
+
+                        # Convert 1D buffer to original memref type
+                        if isinstance(dst_type, MemRefType) and dst_type.shape:
+                            # First cast to target address space if needed (dst_type now has integer address space)
+                            if dst_type.memory_space is not None:
+                                buffer_with_space = memref_d.MemorySpaceCastOp(
+                                    MemRefType.get(
+                                        buffer.type.shape,
+                                        buffer.type.element_type,
+                                        memory_space=dst_type.memory_space
+                                    ),
+                                    buffer
+                                ).result
+                            else:
+                                buffer_with_space = buffer
+
+                            # Extract dimensions from PyObject for reshaping (only for dynamic dimensions)
+                            dynamic_sizes = []
+                            static_sizes = []
+                            for dim_idx in range(len(dst_type.shape)):
+                                if dst_type.is_dynamic_dim(dim_idx):
+                                    # Dynamic dimension - get from PyObject
+                                    dim_const = arith_d.constant(i32, dim_idx)
+                                    dim_value = func_d.call(
+                                        get_dim_func.type.results, get_dim_func_symbol, [arg, dim_const]
+                                    )
+                                    dim_value = arith_d.index_cast(IndexType.get(), dim_value)
+                                    dynamic_sizes.append(dim_value)
+                                    static_sizes.append(ShapedType.get_dynamic_size())
+                                else:
+                                    # Static dimension - no operand needed
+                                    static_sizes.append(dst_type.shape[dim_idx])
+
+                            # Compute static strides for dense layout
+                            static_strides = []
+                            stride = 1
+                            for i in reversed(range(len(dst_type.shape))):
+                                static_strides.append(stride)
+                                if dst_type.is_dynamic_dim(i):
+                                    # For dynamic dims, we can't compute stride statically
+                                    static_strides[-1] = ShapedType.get_dynamic_stride_or_offset()
+                                    break  # Remaining strides become dynamic too
+                                else:
+                                    stride *= dst_type.shape[i]
+                            static_strides.reverse()
+
+                            # Convert byte buffer to target memref type using view
+                            offset = arith_d.constant(IndexType.get(), 0)
+                            buffer = memref_d.view(dst_type, buffer_with_space, offset, dynamic_sizes)
+
+                        launch_args.append(buffer)
+                    elif binding.binding_type == BindingType.SCALAR_VALUE:
+                        arg = func_args[binding_map[id(binding)]]
+                        # Extract scalar from PyObject
+                        scalar = func_d.call(
+                            get_int64_func.type.results, get_int64_func_symbol, [arg]
+                        )
+                        launch_args.append(scalar)
+                    elif binding.binding_type == BindingType.SYMBOL_VALUE:
+                        sym = binding.symbol_type
+                        value = symbol_vals[sym]
+                        launch_args.append(value)
+            else:
+                # Normal case: full ABI processing
+                for binding, dst_type in zip(bindings, gpu_arg_types):
                 if binding.binding_type == BindingType.KERNEL_BUFFER:
                     arg = func_args[binding_map[id(binding)]]
                     # Extract buffer from PyObject
@@ -400,7 +505,36 @@ class WaveEmitter:
                         get_buffer_func.type.results, get_buffer_func_symbol, [arg]
                     )
                     offset = arith_d.constant(IndexType.get(), 0)
-                    buffer = memref_d.view(dst_type, buffer, offset, [])
+
+                    if preserve_kernel_signature and isinstance(dst_type, MemRefType) and dst_type.shape:
+                        # For override MLIR: convert 0D memref to original multidimensional memref
+                        # Extract dimensions from PyObject for reshaping
+                        shape_values = []
+                        for dim_idx in range(len(dst_type.shape)):
+                            if dst_type.is_dynamic_dim(dim_idx):
+                                # Dynamic dimension - get from PyObject
+                                dim_const = arith_d.constant(i32, dim_idx)
+                                dim_value = func_d.call(
+                                    get_dim_func.type.results, get_dim_func_symbol, [arg, dim_const]
+                                )
+                                dim_value = arith_d.index_cast(IndexType.get(), dim_value)
+                                shape_values.append(dim_value)
+                            else:
+                                # Static dimension
+                                shape_values.append(arith_d.constant(IndexType.get(), dst_type.shape[dim_idx]))
+
+                        # Reinterpret the 0D memref as multidimensional
+                        buffer = memref_d.reinterpret_cast(
+                            dst_type,
+                            buffer,
+                            offset,
+                            shape_values,
+                            []  # strides - use default
+                        )
+                    else:
+                        # Normal case: 0D memref
+                        buffer = memref_d.view(dst_type, buffer, offset, [])
+
                     launch_args.append(buffer)
                 elif binding.binding_type == BindingType.SCALAR_VALUE:
                     arg = func_args[binding_map[id(binding)]]

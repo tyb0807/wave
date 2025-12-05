@@ -417,9 +417,13 @@ def wave_compile(
 
         ireefy_overriding_module = False
         if options.override_mlir:
+            print("TYB: override_mlir first 500 chars:")
+            print(options.override_mlir[:500])
             overriding_module_op = Module.parse(
                 options.override_mlir, context=mb.module_op.context
             )
+            print("TYB: parsed override module:")
+            print(str(overriding_module_op)[:500])
             # If there is no stream.executable op at the top-level of the
             # module, we need to iree-fy the module by invoking
             # `compile_to_mlir()` with our existing module.

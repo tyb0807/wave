@@ -9,6 +9,7 @@
 #include "water/Dialect/Wave/Transforms/LoweringPatterns.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "water/Dialect/Wave/IR/WaveDialect.h"
 #include "water/Dialect/Wave/IR/WaveOps.h"
@@ -90,18 +91,20 @@ mlir::Type wave::WaveTypeConverter::convertTensorFromComponents(
     return nullptr;
 
   case wave::WaveAddressSpace::Global: {
-    // GPU global memory (device memory)
-    auto globalMemoryAddressSpace = gpu::AddressSpaceAttr::get(
-        elementType.getContext(), gpu::AddressSpace::Global);
+    // GPU global memory (device memory) - use integer address space
+    auto globalMemoryAddressSpace = IntegerAttr::get(
+        IntegerType::get(elementType.getContext(), 64),
+        static_cast<unsigned>(gpu::AddressSpace::Global));
     return MemRefType::get(*staticShape, elementType,
                            /*layout=*/MemRefLayoutAttrInterface{},
                            globalMemoryAddressSpace);
   }
 
   case wave::WaveAddressSpace::Shared: {
-    // GPU shared memory
-    auto workgroupMemoryAddressSpace = gpu::AddressSpaceAttr::get(
-        elementType.getContext(), gpu::AddressSpace::Workgroup);
+    // GPU shared memory - use integer address space
+    auto workgroupMemoryAddressSpace = IntegerAttr::get(
+        IntegerType::get(elementType.getContext(), 64),
+        static_cast<unsigned>(gpu::AddressSpace::Workgroup));
     return MemRefType::get(*staticShape, elementType,
                            /*layout=*/MemRefLayoutAttrInterface{},
                            workgroupMemoryAddressSpace);

@@ -716,23 +716,72 @@ class LaunchableWave(Launchable):
             trace.location,
         )
 
-        # Only emit MLIR if we don't have a module yet.
+        # Create emitter once
+        emitter = WaveEmitter(
+            dispatch_entrypoint,
+            trace,
+            self.constraints,
+            options,
+            self.grid_type.dims,
+            entrypoint_name,
+        )
+
+        kernel_func = None
+
         if not module_op:
-            emitter = WaveEmitter(
-                dispatch_entrypoint,
-                trace,
-                self.constraints,
-                options,
-                self.grid_type.dims,
-                entrypoint_name,
-            )
+            # No override MLIR - emit normal Wave MLIR
             with mb.module_op.context, Location.unknown():
                 module_op = builtin_d.ModuleOp()
 
             with InsertionPoint(module_op.body), Location.unknown():
-                func = emitter.emit(trace.get_root_graph())
-                if options.use_water_pipeline:
-                    emitter.emit_host_func(func)
+                kernel_func = emitter.emit(trace.get_root_graph())
+        else:
+            # Have override MLIR - find the kernel function
+            for op in module_op.operation.regions[0].blocks[0].operations:
+                if op.operation.name == "func.func":
+                    kernel_func = op
+                    break
+
+            # For override MLIR with water pipeline, extract existing GPU operations
+            if options.use_water_pipeline and kernel_func is not None:
+                # Extract existing gpu.block_id and gpu.thread_id from override MLIR
+                # and set them directly in emitter
+                workgroup_ids = [None, None, None]  # x, y, z
+                thread_ids = [None, None, None]    # x, y, z
+
+                for op in kernel_func.body.blocks[0].operations:
+                    if op.operation.name == "gpu.block_id":
+                        if 'dimension' in op.operation.attributes:
+                            dim_attr = op.operation.attributes['dimension']
+                            dim_str = str(dim_attr)
+                            if 'dim x>' in dim_str:
+                                workgroup_ids[0] = op.results[0]
+                            elif 'dim y>' in dim_str:
+                                workgroup_ids[1] = op.results[0]
+                            elif 'dim z>' in dim_str:
+                                workgroup_ids[2] = op.results[0]
+                    elif op.operation.name == "gpu.thread_id":
+                        if 'dimension' in op.operation.attributes:
+                            dim_attr = op.operation.attributes['dimension']
+                            dim_str = str(dim_attr)
+                            if 'dim x>' in dim_str:
+                                thread_ids[0] = op.results[0]
+                            elif 'dim y>' in dim_str:
+                                thread_ids[1] = op.results[0]
+                            elif 'dim z>' in dim_str:
+                                thread_ids[2] = op.results[0]
+
+                # Set emitter state directly without calling emit_program_invariants
+                emitter.workgroup_ids = workgroup_ids
+                emitter.thread_ids = thread_ids
+
+        # Apply emit_host_func for both cases if using water pipeline
+        if options.use_water_pipeline and kernel_func is not None:
+            with module_op.context, Location.unknown():
+                with InsertionPoint(module_op.body):
+                    # For override MLIR, preserve kernel signature; for normal MLIR, modify it
+                    is_override_mlir = options.override_mlir is not None
+                    emitter.emit_host_func(kernel_func, preserve_kernel_signature=is_override_mlir)
 
         # Otherwise, we need to iree-fy the existing module (that supposedly has
         # upstream MLIR ops only) in order for it to be executable in the wave

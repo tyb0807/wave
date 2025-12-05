@@ -168,6 +168,7 @@ def _type_to_wave_mlir(
     raise RuntimeError(f"Unsupported wave type for MLIR conversion: {type_}")
 
 
+
 def _parse_input() -> tuple[CapturedTrace, list[Constraint], WaveCompileOptions, str]:
     """Parses and returns the pickled trace, options, and pipeline from stdin.
 
@@ -735,6 +736,9 @@ def _create_kernel_module(
         p for p in placeholders if getattr(p, "graph", None) is trace.get_root_graph()
     ]
     top_level_names = [p.name for p in top_level_placeholders]
+
+    # TODO: Add proper normal form attribute setting here
+    # For now, this will be handled by string manipulation in the test
 
     # Build function argument types from top-level placeholders
     arg_types = []
