@@ -76,6 +76,12 @@ def _is_water_and_ee_available() -> bool:
     return is_water_available() and is_execution_engine_available()
 
 
+require_water = pytest.mark.skipif(
+    from wave_lang.kernel.wave.water import is_water_available
+    not is_water_available(),
+    reason="Water is not available.",
+)
+
 require_water_and_ee = pytest.mark.skipif(
     not _is_water_and_ee_available(),
     reason="Water or execution engine are not available.",
