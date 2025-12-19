@@ -1,13 +1,16 @@
 // RUN: water-opt %s --water-wave-propagate-elements-per-thread --split-input-file --verify-diagnostics --allow-unregistered-dialect | FileCheck %s
 
+// CHECK: #wave.normal_form<full_types,memory_only_types>
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
-  func.func @register_alone(%mem: !wave.tensor<[@M] of f32, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
-    %cst = arith.constant 0.0 : f32
-    // expected-error @below {{couldn't identify elements per thread for result #0}}
-    %reg = wave.register %cst : !wave.tensor<[@M] of f32, <register>>
-    wave.write %reg, %mem { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <global>>
-    return
-  }
+// CHECK-LABEL: @register_backward_propagation
+func.func @register_backward_propagation(%mem: !wave.tensor<[@M] of f32, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
+  %cst = arith.constant 0.0 : f32
+  // CHECK: wave.register {{.*}} : vector<4xf32>
+  %reg = wave.register %cst : !wave.tensor<[@M] of f32, <register>>
+  // CHECK: wave.write {{.*}} : vector<4xf32>, !wave.tensor<[@M] of f32, <global>>
+  wave.write %reg, %mem { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <global>>
+  return
+}
 }
 
 // -----
