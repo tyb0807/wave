@@ -1,10 +1,10 @@
 // RUN: water-opt %s --water-wave-propagate-elements-per-thread --split-input-file --verify-diagnostics --allow-unregistered-dialect | FileCheck %s
 
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
-  func.func @register_alone() attributes {wave.hyperparameters = #wave.hyperparameters<{Y = 10, Z = 1}>} {
+  func.func @register_alone() attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
     %cst = arith.constant 0.0 : f32
     // expected-error @below {{couldn't identify elements per thread for result #0}}
-    wave.register %cst : !wave.tensor<[@Y, @Z] of f32, <register>>
+    wave.register %cst : !wave.tensor<[@M] of f32, <register>>
     return
   }
 }
@@ -12,11 +12,10 @@ module attributes {wave.normal_form = #wave.normal_form<full_types>} {
 // -----
 
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
-  func.func @register_add() attributes {wave.hyperparameters = #wave.hyperparameters<{Y = 10, Z = 1}>} {
+  func.func @register_add() attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
     %cst = arith.constant 0.0 : f32
-    // expected-error @below {{couldn't identify elements per thread for result #0}}
-    %reg = wave.register %cst { elements_per_thread = 4 } : !wave.tensor<[@Y, @Z] of f32, <register>>
-    wave.add %reg, %reg : (!wave.tensor<[@Y, @Z] of f32, <register>>, !wave.tensor<[@Y, @Z] of f32, <register>>) -> !wave.tensor<[@Y, @Z] of f32, <register>>
+    %reg = wave.register %cst { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>
+    wave.add %reg, %reg : (!wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <register>>) -> !wave.tensor<[@M] of f32, <register>>
     return
   }
 }
@@ -100,7 +99,7 @@ func.func @missing_elements_per_thread(%mem: !wave.tensor<[@M] of f16, <global>>
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
 func.func @read_write_conflict(%mem: !wave.tensor<[@M] of f16, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 128}>}  {
   %reg = wave.read %mem {elements_per_thread = 4} : (!wave.tensor<[@M] of f16, <global>>) -> !wave.tensor<[@M] of f16, <register>>
-  // expected-error @below {{failed to propagate elements per thread backward: mismatch between elements_per_thread attribute (8) and register operand #0 (4)}}
+  // expected-error @below {{failed to propagate elements per thread backward: mismatch between elements_per_thread attribute (8) and operand #0 (4)}}
   wave.write %reg, %mem {elements_per_thread = 8} : !wave.tensor<[@M] of f16, <register>>, !wave.tensor<[@M] of f16, <global>>
   return
 }
@@ -112,7 +111,7 @@ module attributes {wave.normal_form = #wave.normal_form<full_types>} {
 func.func @read_write_conflict_indirect(%mem: !wave.tensor<[@M] of f16, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 128}>}  {
   %reg = wave.read %mem {elements_per_thread = 4} : (!wave.tensor<[@M] of f16, <global>>) -> !wave.tensor<[@M] of f16, <register>>
   %val = wave.exp2 %reg : (!wave.tensor<[@M] of f16, <register>>) -> !wave.tensor<[@M] of f16, <register>>
-  // expected-error @below {{failed to propagate elements per thread backward: mismatch between elements_per_thread attribute (8) and register operand #0 (4)}}
+  // expected-error @below {{failed to propagate elements per thread backward: mismatch between elements_per_thread attribute (8) and operand #0 (4)}}
   wave.write %reg, %mem {elements_per_thread = 8} : !wave.tensor<[@M] of f16, <register>>, !wave.tensor<[@M] of f16, <global>>
   return
 }
