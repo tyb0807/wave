@@ -1078,6 +1078,54 @@ LogicalResult MmaOp::verify() {
                                    accumulatorType.getElementType());
 }
 
+llvm::FailureOr<mlir::ChangeResult> wave::MmaOp::propagateElementsPerThreadForward(
+    llvm::ArrayRef<wave::ElementsPerThreadLatticeValue> operandElements,
+    llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue> resultElements,
+    llvm::raw_ostream &errs) {
+  // For MMA, the result elements per thread is determined by the MMA kind
+  // Get the MMA specification (M, N, K dimensions and element types)
+  wave::WaveMmaSpec spec = wave::WaveMmaKindAttr::getSpec(getContext(), getKind());
+
+  // Elements per thread = (M × N) / threads_per_wave
+  // Get threads per wave from hardware constraint if available
+  // TODO: Extract from hardware constraint instead of assuming 64
+  unsigned threadsPerWave = 64; // Temporary - should come from hardware constraint
+  unsigned totalElements = spec.m * spec.n;
+  unsigned expectedElementsPerThread = totalElements / threadsPerWave;
+
+  wave::ElementsPerThreadLatticeValue expectedResult(expectedElementsPerThread);
+  return wave::detail::checkAndPropagateElementsPerThreadFromConstant(
+      expectedResult, llvm::ArrayRef<wave::ElementsPerThreadLatticeValue>(),
+      resultElements, "computed from MMA kind", "", "result", errs);
+}
+
+llvm::FailureOr<mlir::ChangeResult> wave::MmaOp::propagateElementsPerThreadBackward(
+    llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue> operandElements,
+    llvm::ArrayRef<wave::ElementsPerThreadLatticeValue>,
+    llvm::raw_ostream &errs) {
+  // For MMA, the accumulator (operands[2]) should have the same elements per thread as the result
+  // The LHS and RHS operands may have different constraints based on their dimensions
+  wave::WaveMmaSpec spec = wave::WaveMmaKindAttr::getSpec(getContext(), getKind());
+
+  // Accumulator elements per thread = (M × N) / threads_per_wave
+  unsigned threadsPerWave = 64; // TODO: Extract from hardware constraint
+  unsigned accumulatorElementsPerThread = (spec.m * spec.n) / threadsPerWave;
+
+  wave::ElementsPerThreadLatticeValue expectedAccumulator(accumulatorElementsPerThread);
+
+  // Only propagate to the accumulator operand (operands[2])
+  if (operandElements.size() >= 3) {
+    llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue> accumulatorOnly =
+        operandElements.drop_front(2).take_front(1);
+
+    return wave::detail::checkAndPropagateElementsPerThreadFromConstant(
+        expectedAccumulator, llvm::ArrayRef<wave::ElementsPerThreadLatticeValue>(),
+        accumulatorOnly, "computed from MMA kind", "", "accumulator operand", errs);
+  }
+
+  return mlir::ChangeResult::NoChange;
+}
+
 //-----------------------------------------------------------------------------
 // ReadOp
 //-----------------------------------------------------------------------------

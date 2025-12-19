@@ -110,6 +110,7 @@ def Exp2Op : UnaryWaveOp<"exp2"> {
 
 def MmaOp : WaveOp<"mma",
     [DeclareOpInterfaceMethods<WaveInferTypeOpInterface>,
+     DeclareOpInterfaceMethods<WaveElementsPerThreadOpInterface>,
      DeclareOpInterfaceMethods<WaveInferIndexExprsOpInterface,
       ["initializeIndexExprsForward", "initializeIndexExprsBackward"]>]>,
             WaveArithmeticOpDoc {

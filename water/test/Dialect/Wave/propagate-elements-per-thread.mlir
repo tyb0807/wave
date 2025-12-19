@@ -149,6 +149,21 @@ func.func @unsupported_op() attributes {wave.hyperparameters = #wave.hyperparame
 
 // -----
 
+// CHECK: #wave.normal_form<full_types,memory_only_types>
+module attributes {wave.normal_form = #wave.normal_form<full_types>} {
+// CHECK-LABEL: @mma_elements_per_thread_propagation
+func.func @mma_elements_per_thread_propagation(%lhs: !wave.tensor<[@M, @K] of f16, <register>>, %rhs: !wave.tensor<[@N, @K] of f16, <register>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 32, N = 32, K = 8}>} {
+  %acc_init = arith.constant 0.0 : f32
+  // CHECK: wave.register {{.*}} : vector<16xf32>
+  %acc = wave.register %acc_init : !wave.tensor<[@M, @N] of f32, <register>>
+  // CHECK: wave.mma {{.*}} : (!wave.tensor<[@M, @K] of f16, <register>>, !wave.tensor<[@N, @K] of f16, <register>>, vector<16xf32>) -> vector<16xf32>
+  %result = wave.mma %lhs, %rhs, %acc {kind = #wave.mma_kind<f32_32x32x8_f16>} : (!wave.tensor<[@M, @K] of f16, <register>>, !wave.tensor<[@N, @K] of f16, <register>>, !wave.tensor<[@M, @N] of f32, <register>>) -> !wave.tensor<[@M, @N] of f32, <register>>
+  return
+}
+}
+
+// -----
+
 // CHECK: #wave.normal_form<memory_only_types>
 module {
   func.func @test_no_existing_normal_form_attr(%mem: !wave.tensor<[@M] of f32, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 128}>} {
