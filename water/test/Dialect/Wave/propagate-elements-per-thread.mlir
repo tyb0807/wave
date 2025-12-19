@@ -1,10 +1,11 @@
 // RUN: water-opt %s --water-wave-propagate-elements-per-thread --split-input-file --verify-diagnostics --allow-unregistered-dialect | FileCheck %s
 
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
-  func.func @register_alone() attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
+  func.func @register_alone(%mem: !wave.tensor<[@M] of f32, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
     %cst = arith.constant 0.0 : f32
     // expected-error @below {{couldn't identify elements per thread for result #0}}
-    wave.register %cst : !wave.tensor<[@M] of f32, <register>>
+    %reg = wave.register %cst : !wave.tensor<[@M] of f32, <register>>
+    wave.write %reg, %mem { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <global>>
     return
   }
 }
@@ -12,10 +13,11 @@ module attributes {wave.normal_form = #wave.normal_form<full_types>} {
 // -----
 
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
-  func.func @register_add() attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
+  func.func @register_add(%mem: !wave.tensor<[@M] of f32, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
     %cst = arith.constant 0.0 : f32
     %reg = wave.register %cst { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>
-    wave.add %reg, %reg : (!wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <register>>) -> !wave.tensor<[@M] of f32, <register>>
+    %sum = wave.add %reg, %reg : (!wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <register>>) -> !wave.tensor<[@M] of f32, <register>>
+    wave.write %sum, %mem { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <global>>
     return
   }
 }
