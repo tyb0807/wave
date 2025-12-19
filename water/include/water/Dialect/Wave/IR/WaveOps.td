@@ -303,7 +303,7 @@ def ReadOp : WaveOp<"read", [
 
 def RegisterOp : WaveOp<"register", [
     WaveInferTypeOpInterface, NoOpTypeInferenceOpTrait,
-    NoOpElementsPerThreadOpTrait,
+    DeclareOpInterfaceMethods<WaveElementsPerThreadOpInterface>,
     WaveInferIndexExprsOpInterface, IdentityIndexExprsOpTrait]> {
   let summary = "Defines a tensor value known to be placed in a register";
   let description = [{
