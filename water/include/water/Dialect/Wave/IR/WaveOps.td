@@ -314,7 +314,9 @@ def RegisterOp : WaveOp<"register", [
 
   let arguments = !con((ins
     Arg<Type<Or<[AnyInteger.predicate, AnyFloat.predicate]>>,
-        "Scalar value to initialize the tensor elements">:$init
+        "Scalar value to initialize the tensor elements">:$init,
+    Arg<OptionalAttr<I64Attr>,
+        "Number of elements processed by each thread">:$elements_per_thread
   ), commonArguments);
 
   let results = (outs
@@ -322,7 +324,7 @@ def RegisterOp : WaveOp<"register", [
   );
 
   let assemblyFormat =
-    "$init " # commonArgumentsSyntax # " attr-dict `:`"
+    "$init " # commonArgumentsSyntax # "attr-dict `:`"
     " custom<RegisterOpTypes>(type($init), type($result))";
   let hasVerifier = 1;
 }
