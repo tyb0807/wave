@@ -147,6 +147,7 @@ func.func @unsupported_op() attributes {wave.hyperparameters = #wave.hyperparame
 }
 }
 
+
 // -----
 
 // CHECK: #wave.normal_form<memory_only_types>
