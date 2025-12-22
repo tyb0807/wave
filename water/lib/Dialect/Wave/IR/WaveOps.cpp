@@ -1434,13 +1434,12 @@ llvm::FailureOr<mlir::ChangeResult> wave::WriteOp::propagateElementsPerThreadFor
 
   // Validate register operand (value_to_store) matches attribute
   wave::ElementsPerThreadLatticeValue expectedValue(*elementsPerThread);
-  llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue> valueOnly =
-      const_cast<llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue>>(
-          operandElements).slice(0, 1); // Only first operand (value_to_store)
+  llvm::ArrayRef<wave::ElementsPerThreadLatticeValue> valueOnly =
+      operandElements.slice(0, 1); // Only first operand (value_to_store)
 
   return wave::detail::checkAndPropagateElementsPerThreadFromConstant(
-      expectedValue, llvm::ArrayRef<wave::ElementsPerThreadLatticeValue>(),
-      valueOnly, "elements_per_thread attribute", "", "register operand", errs);
+      expectedValue, valueOnly, llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue>(),
+      "elements_per_thread attribute", "register operand", "", errs);
 }
 
 llvm::FailureOr<mlir::ChangeResult> wave::WriteOp::propagateElementsPerThreadBackward(
