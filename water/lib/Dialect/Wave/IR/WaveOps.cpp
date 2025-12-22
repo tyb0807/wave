@@ -1338,6 +1338,34 @@ mlir::LogicalResult wave::RegisterOp::verify() {
   return mlir::success();
 }
 
+llvm::FailureOr<mlir::ChangeResult> wave::RegisterOp::propagateElementsPerThreadForward(
+    llvm::ArrayRef<wave::ElementsPerThreadLatticeValue>,
+    llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue> resultElements,
+    llvm::raw_ostream &errs) {
+  // RegisterOp propagates elements_per_thread if explicitly specified,
+  // otherwise relies on backward propagation from users
+  std::optional<int64_t> elementsPerThread = getElementsPerThread();
+  if (elementsPerThread) {
+    wave::ElementsPerThreadLatticeValue expectedResult(*elementsPerThread);
+    return wave::detail::checkAndPropagateElementsPerThreadFromConstant(
+        expectedResult, llvm::ArrayRef<wave::ElementsPerThreadLatticeValue>(),
+        resultElements, "elements_per_thread attribute", "", "result", errs);
+  }
+
+  // No explicit attribute - let backward propagation determine elements per thread
+  return mlir::ChangeResult::NoChange;
+}
+
+llvm::FailureOr<mlir::ChangeResult> wave::RegisterOp::propagateElementsPerThreadBackward(
+    llvm::MutableArrayRef<wave::ElementsPerThreadLatticeValue>,
+    llvm::ArrayRef<wave::ElementsPerThreadLatticeValue> resultElements,
+    llvm::raw_ostream &) {
+  // RegisterOp accepts backward propagation from users to determine elements per thread
+  // The actual propagation is handled by the analysis framework
+  // We don't need to do anything special here - just let the framework handle it
+  return mlir::ChangeResult::NoChange;
+}
+
 //-----------------------------------------------------------------------------
 // ExtractSliceOp
 //-----------------------------------------------------------------------------

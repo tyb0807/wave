@@ -1,5 +1,20 @@
 // RUN: water-opt %s --water-wave-propagate-elements-per-thread --split-input-file --verify-diagnostics --allow-unregistered-dialect | FileCheck %s
 
+// CHECK: #wave.normal_form<full_types,memory_only_types>
+module attributes {wave.normal_form = #wave.normal_form<full_types>} {
+// CHECK-LABEL: @register_backward_propagation
+func.func @register_backward_propagation(%mem: !wave.tensor<[@M] of f32, <global>>) attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
+  %cst = arith.constant 0.0 : f32
+  // CHECK: wave.register {{.*}} : vector<4xf32>
+  %reg = wave.register %cst : !wave.tensor<[@M] of f32, <register>>
+  // CHECK: wave.write {{.*}} : vector<4xf32>, !wave.tensor<[@M] of f32, <global>>
+  wave.write %reg, %mem { elements_per_thread = 4 } : !wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <global>>
+  return
+}
+}
+
+// -----
+
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
   func.func @register_alone() attributes {wave.hyperparameters = #wave.hyperparameters<{Y = 10, Z = 1}>} {
     %cst = arith.constant 0.0 : f32
@@ -12,13 +27,15 @@ module attributes {wave.normal_form = #wave.normal_form<full_types>} {
 // -----
 
 module attributes {wave.normal_form = #wave.normal_form<full_types>} {
-  func.func @register_add() attributes {wave.hyperparameters = #wave.hyperparameters<{Y = 10, Z = 1}>} {
-    %cst = arith.constant 0.0 : f32
-    // expected-error @below {{couldn't identify elements per thread for result #0}}
-    %reg = wave.register %cst { elements_per_thread = 4 } : !wave.tensor<[@Y, @Z] of f32, <register>>
-    wave.add %reg, %reg : (!wave.tensor<[@Y, @Z] of f32, <register>>, !wave.tensor<[@Y, @Z] of f32, <register>>) -> !wave.tensor<[@Y, @Z] of f32, <register>>
-    return
-  }
+func.func @register_no_propagation_source() attributes {wave.hyperparameters = #wave.hyperparameters<{M = 10}>} {
+  %cst = arith.constant 0.0 : f32
+  // RegisterOp without explicit elements_per_thread and no operations to propagate backward from
+  // expected-error @below {{couldn't identify elements per thread for result #0}}
+  %reg = wave.register %cst : !wave.tensor<[@M] of f32, <register>>
+  // The add operation itself can't provide elements_per_thread since it doesn't have any either
+  %result = wave.add %reg, %reg : (!wave.tensor<[@M] of f32, <register>>, !wave.tensor<[@M] of f32, <register>>) -> !wave.tensor<[@M] of f32, <register>>
+  return
+}
 }
 
 // -----
