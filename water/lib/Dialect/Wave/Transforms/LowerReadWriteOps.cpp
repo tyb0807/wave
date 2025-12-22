@@ -68,6 +68,7 @@ materializeAffine(Location loc, ArrayRef<Attribute> symbols, AffineMap map,
   // the dim operands before the symbol operands below.
   assert(map.getNumDims() == 0 && "expected 0 dims");
 
+
   auto threadId = [&](gpu::Dimension d) -> Value {
     return gpu::ThreadIdOp::create(rewriter, loc, rewriter.getIndexType(), d);
   };
@@ -83,7 +84,6 @@ materializeAffine(Location loc, ArrayRef<Attribute> symbols, AffineMap map,
       std::optional<int64_t> value = hyper.getSymbolValue(name);
 #ifndef NDEBUG
       if (!value) {
-        llvm::errs() << "symbol: " << name << "\n";
         assert(false && "unknown symbol, should have been caught by verifiers");
       }
 #endif
@@ -125,6 +125,7 @@ materializeAffine(Location loc, ArrayRef<Attribute> symbols, AffineMap map,
       }
       continue;
     }
+
   }
 
   // In case map contains multiple results, create one apply per result.
@@ -134,6 +135,8 @@ materializeAffine(Location loc, ArrayRef<Attribute> symbols, AffineMap map,
     AffineMap submap =
         AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
     SmallVector<Value> symVals = baseSymVals;
+
+
     affine::canonicalizeMapAndOperands(&submap, &symVals);
 
     Value apply = affine::AffineApplyOp::create(rewriter, loc, submap, symVals);
