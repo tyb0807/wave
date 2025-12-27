@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -87,6 +88,30 @@ struct LowerWaveToMLIRPass
              llvm::none_of(op.getFunctionType().getResults(),
                            llvm::IsaPred<wave::WaveTensorType>);
     });
+
+    // Mark SCF operations as illegal if they contain Wave tensor types
+    target.addDynamicallyLegalOp<scf::ForOp>([](scf::ForOp op) {
+      // Check iter_args types
+      for (Value iterArg : op.getInitArgs()) {
+        if (isa<wave::WaveTensorType>(iterArg.getType()))
+          return false;
+      }
+      // Check result types
+      for (Type resultType : op.getResultTypes()) {
+        if (isa<wave::WaveTensorType>(resultType))
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::YieldOp>([](scf::YieldOp op) {
+      for (Value operand : op.getOperands()) {
+        if (isa<wave::WaveTensorType>(operand.getType()))
+          return false;
+      }
+      return true;
+    });
+
     ConversionConfig config;
     config.allowPatternRollback = false;
 
@@ -114,6 +139,9 @@ struct LowerWaveToMLIRPass
           mlir::populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
               patterns, typeConverter);
 
+          // Add SCF type conversion patterns for for loops and yields
+          mlir::scf::populateSCFStructuralTypeConversions(typeConverter, patterns);
+
           wave::populateWaveMiscellaneousOpsLoweringPatterns(typeConverter,
                                                              patterns);
           wave::populateWaveBinaryOpLoweringPatterns(typeConverter, patterns);
@@ -137,6 +165,12 @@ struct LowerWaveToMLIRPass
 
     if (failed(wave::clearNormalFormPassPostcondition(op)))
       return signalPassFailure();
+
+    // Clean up iterator attributes from scf.for operations
+    // These were added during control flow lowering but are no longer needed
+    op->walk([](scf::ForOp forOp) {
+      forOp->removeAttr("iterator");
+    });
   }
 };
 
