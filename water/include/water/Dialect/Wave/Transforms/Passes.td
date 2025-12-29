@@ -24,13 +24,14 @@ def LowerWaveControlFlowPass : Pass<"lower-wave-control-flow"> {
 def LowerWaveToMLIRPass : Pass<"lower-wave-to-mlir"> {
   let summary = "Lower Wave dialect operations to upstream MLIR dialects";
   let description = [{
-    This pass lowers remaining Wave dialect operations to upstream MLIR
-    dialects, notably arith and vector. Control flow operations should
-    be lowered separately using lower-wave-control-flow.
+    This pass lowers Wave dialect operations to upstream MLIR dialects,
+    including control flow operations (wave.iterate to scf.for) and
+    other operations to arith, vector, memref and math dialects.
   }];
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::math::MathDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::vector::VectorDialect",
     "::mlir::memref::MemRefDialect",
   ];
