@@ -396,8 +396,8 @@ normalform.module [#wave.normal_form<full_types>] {
     // CHECK:      wave.iterate
     // CHECK-SAME: iter_args
     // CHECK-SAME: index
-    // CHECK-DAG:  M = #wave<index_mapping[#wave.index_symbol<T0>, #wave.index_symbol<GPR_NUM>] -> (((GPR_NUM floordiv 4) * 8) mod 32 + ((T0 mod 64) floordiv 32) * 4 + GPR_NUM mod 4, 16, 32)>
-    // CHECK-DAG:  N = #wave<index_mapping[#wave.index_symbol<T0>] -> (T0 mod 32, 1, 1)>
+    // CHECK-DAG:  <"M"> : [#wave.index_symbol<T0>, #wave.index_symbol<GPR_NUM>] -> (((GPR_NUM floordiv 4) * 8) mod 32 + ((T0 mod 64) floordiv 32) * 4 + GPR_NUM mod 4, 16, 32)
+    // CHECK-DAG:  <"N"> : [#wave.index_symbol<T0>] -> (T0 mod 32, 1, 1)
     %mma_result = wave.iterate @K iter_args(%c_reg) {
       ^bb0(%acc: !wave.tensor<[@M, @N] of f32>):
 
@@ -537,8 +537,8 @@ normalform.module [#wave.normal_form<full_types>] {
     %cst0 = arith.constant 0.0 : f32
     %c_reg = wave.register %cst0 : !wave.tensor<[@M, @N] of f32, <register>>
     // CHECK: wave.allocate
-    // CHECK-DAG:  M : [#wave.index_symbol<T0>] -> (((T0 mod 64) floordiv 16) * 4, 4, 16)
-    // CHECK-DAG:  N : [#wave.index_symbol<T0>] -> (T0 mod 16, 1, 1)
+    // CHECK-DAG:  <"M"> : [#wave.index_symbol<T0>] -> (((T0 mod 64) floordiv 16) * 4, 4, 16)
+    // CHECK-DAG:  <"N"> : [#wave.index_symbol<T0>] -> (T0 mod 16, 1, 1)
     %alloc = wave.allocate {distributed_shape = #wave.expr_list<[] -> (42)>}
       : !wave.tensor<[@M, @N] of f32, <shared>>
     %c = wave.mma %a, %b_reg, %c_reg { kind = #wave.mma_kind<f32_16x16x16_f16> }

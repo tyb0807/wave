@@ -448,3 +448,26 @@ func.func @empty_yield() {
   } : () -> ()
   return
 }
+
+// -----
+
+// This test verifies that WaveIndexExprsAttr preserves dimension ordering
+// during parsing and printing. Unlike DictionaryAttr which alphabetically
+// sorts entries (K before M), WaveIndexExprsAttr maintains insertion order.
+
+// CHECK-LABEL: @index_exprs_preserve_dimension_order
+func.func @index_exprs_preserve_dimension_order() {
+  %0 = arith.constant 0.0 : f16
+  // Dimensions are listed as M, K - this order must be preserved.
+  // With DictionaryAttr, this would be reordered to K, M (alphabetical).
+  // CHECK: wave.register
+  // CHECK-SAME: index
+  // CHECK-SAME: {M : {{.*}}, K : {{.*}}}
+  %register = wave.register %0
+    index [{
+      M : [#wave.index_symbol<T0>] -> (T0 mod 16, 1, 1),
+      K : [#wave.index_symbol<T0>] -> (((T0 mod 64) floordiv 16) * 4, 4, 1)
+    }]
+    : !wave.tensor<[@M, @K] of f16, <register>>
+  return
+}

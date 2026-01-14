@@ -276,16 +276,16 @@ func.func @index_attr_missing_stride(%arg0: f32) {
 // -----
 
 func.func @index_attr_not_dict(%arg0: f32) {
-  // expected-error @+1 {{'wave.register' op attribute 'index' failed to satisfy constraint: Array of dictionary attributes}}
+  // expected-error @+1 {{'wave.register' op attribute 'index' failed to satisfy constraint: array of WaveIndexExprsAttr}}
   "wave.register"(%arg0) { index = 42 } : (f32) -> !wave.tensor<[@M] of f32, <register>>
   return
 }
 
 // -----
 
-// 'index' array elements must be dictionaries mapping to WaveIndexMappingAttr values.
+// 'index' array elements must be WaveIndexExprsAttr, not dictionaries.
 func.func @index_attr_wrong_value_type(%arg0: f32) {
-  // expected-error @below {{'index' attribute value for key "M" must be WaveIndexMappingAttr, got 42 : i64}}
+  // expected-error @below {{'wave.register' op attribute 'index' failed to satisfy constraint: array of WaveIndexExprsAttr}}
   "wave.register"(%arg0) { index = [{ M = 42 }] } : (f32) -> vector<4xf32>
   return
 }
@@ -402,7 +402,7 @@ module attributes { wave.hyperparameters = #wave.hyperparameters<{A = 42, C = 43
 normalform.module [#wave.normal_form<full_types>] {
   func.func @index_key_unspecified(%mem: !wave.tensor<[@M] of f16, <global>>)
   attributes {wave.hyperparameters = #wave.hyperparameters<{BLOCK_M = 64, BLOCK_N = 64, M = 128}>}  {
-    // expected-error @below {{attribute "index" uses symbolic value "N" not provided as a hyperparameter}}
+    // expected-error @below {{attribute "index" uses symbolic value #wave.symbol<"N"> not provided as a hyperparameter}}
     // expected-note @below {{BLOCK_M, BLOCK_N, M}}
     %0 = wave.read %mem index [{
         M : [#wave.symbol<"BLOCK_M">, #wave.index_symbol<WG0>, #wave.index_symbol<T0>] -> (BLOCK_M * WG0 + (BLOCK_M floordiv 2) * (T0 floordiv 64) + T0 mod 64, 1, 64),
