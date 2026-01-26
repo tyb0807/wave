@@ -718,4 +718,3 @@ func.func @broadcast_result_size_mismatch(%arg0: !wave.tensor<[@M] of f32, <regi
   wave.broadcast %arg0 dims [@N, @K] : (!wave.tensor<[@M] of f32, <register>>) -> !wave.tensor<[@M, @N] of f32, <register>>
   return
 }
-

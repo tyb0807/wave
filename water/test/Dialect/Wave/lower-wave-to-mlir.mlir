@@ -1142,3 +1142,37 @@ normalform.module [#wave.normal_form<full_types,index_exprs,memory_only_types,re
     return
   }
 }
+
+// -----
+
+// Test broadcast lowering - extracts scalar and broadcasts to target vector.
+normalform.module [#wave.normal_form<full_types,index_exprs,memory_only_types,resolved_allocations,ordered_syms>] {
+  // CHECK-LABEL: func.func @lower_broadcast
+  func.func @lower_broadcast() attributes {wave.hyperparameters = #wave.hyperparameters<{N = 4}>} {
+    %cst = arith.constant 1.0 : f32
+    // CHECK: %[[SRC:.*]] = arith.constant dense<1.000000e+00> : vector<1xf32>
+    %src = wave.register %cst : vector<1xf32>
+    // CHECK-NOT: wave.broadcast
+    // CHECK: %[[ELEM:.*]] = vector.extract %[[SRC]][0] : f32 from vector<1xf32>
+    // CHECK: %[[RESULT:.*]] = vector.broadcast %[[ELEM]] : f32 to vector<4xf32>
+    %result = wave.broadcast %src dims [@N] : (vector<1xf32>) -> vector<4xf32>
+    return
+  }
+}
+
+// -----
+
+// Test broadcast as no-op when source and result have same shape.
+normalform.module [#wave.normal_form<full_types,index_exprs,memory_only_types,resolved_allocations,ordered_syms>] {
+  // CHECK-LABEL: func.func @lower_broadcast_noop
+  func.func @lower_broadcast_noop() attributes {wave.hyperparameters = #wave.hyperparameters<{N = 4}>} {
+    %cst = arith.constant 2.0 : f32
+    // CHECK: %[[SRC:.*]] = arith.constant dense<2.000000e+00> : vector<4xf32>
+    %src = wave.register %cst : vector<4xf32>
+    // CHECK-NOT: wave.broadcast
+    // CHECK-NOT: vector.extract
+    // CHECK-NOT: vector.broadcast
+    %result = wave.broadcast %src dims [@N] : (vector<4xf32>) -> vector<4xf32>
+    return
+  }
+}

@@ -755,14 +755,52 @@ public:
   }
 };
 
+class BroadcastOpLoweringPattern
+    : public OpConversionPattern<wave::BroadcastOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(wave::BroadcastOp op, wave::BroadcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value source = adaptor.getSource();
+    VectorType srcType = dyn_cast<VectorType>(source.getType());
+    if (!srcType)
+      return rewriter.notifyMatchFailure(op, "expected vector source type");
+
+    Type convertedType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    if (!convertedType)
+      return rewriter.notifyMatchFailure(op, "type conversion failed");
+
+    VectorType dstType = dyn_cast<VectorType>(convertedType);
+    if (!dstType)
+      return rewriter.notifyMatchFailure(op, "expected vector result type");
+
+    // If source and result have the same shape, this is a no-op.
+    if (srcType == dstType) {
+      rewriter.replaceOp(op, source);
+      return success();
+    }
+
+    // Extract scalar element from source and broadcast to result type.
+    Value element = vector::ExtractOp::create(rewriter, loc, source,
+                                              ArrayRef<int64_t>{0});
+    Value result = vector::BroadcastOp::create(rewriter, loc, dstType, element);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 } // namespace
 
 void wave::populateWaveMiscellaneousOpsLoweringPatterns(
     WaveTypeConverter &typeConverter, RewritePatternSet &patterns) {
-  patterns.add<CastOpLoweringPattern, ExtractOpLoweringPattern,
-               ExtractSliceOpLoweringPattern, IterateOpLoweringPattern,
-               RegisterOpLoweringPattern, ShuffleOpLoweringPattern>(
-      typeConverter, patterns.getContext());
+  patterns.add<BroadcastOpLoweringPattern, CastOpLoweringPattern,
+               ExtractOpLoweringPattern, ExtractSliceOpLoweringPattern,
+               IterateOpLoweringPattern, RegisterOpLoweringPattern,
+               ShuffleOpLoweringPattern>(typeConverter, patterns.getContext());
 }
 
 //===----------------------------------------------------------------------===//

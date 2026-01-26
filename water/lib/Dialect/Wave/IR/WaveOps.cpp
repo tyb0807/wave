@@ -94,8 +94,9 @@ static void printSingleSymbol(OpAsmPrinter &printer, Operation *,
 }
 
 // Parse an array of wave symbols like [@M, @N, @K].
-// Custom parsing is required because MLIR's default parser creates SymbolRefAttr
-// for @Name syntax, but Wave requires WaveSymbolAttr for type system consistency.
+// Custom parsing is required because MLIR's default parser creates
+// SymbolRefAttr for @Name syntax, but Wave requires WaveSymbolAttr for type
+// system consistency.
 static ParseResult parseSymbolArray(OpAsmParser &parser,
                                     ArrayAttr &symbolArrayAttr) {
   SmallVector<Attribute> symbols;
@@ -2027,9 +2028,8 @@ llvm::FailureOr<ChangeResult> wave::BroadcastOp::propagateBackward(
     llvm::ArrayRef<WaveTensorType> resultTypes, llvm::raw_ostream &errs) {
   // Backward propagation: infer source shape = result shape - broadcast_dims.
   unsigned sourceIdx = getSourceMutable().getOperandNumber();
-  unsigned resultIdx = getResult().getResultNumber();
   WaveTensorType sourceType = operandTypes[sourceIdx];
-  WaveTensorType resultType = resultTypes[resultIdx];
+  WaveTensorType resultType = resultTypes[0];
 
   // If result is not fully specified, we can't infer source.
   if (!resultType || !resultType.getFullySpecified())
@@ -2060,7 +2060,8 @@ llvm::FailureOr<ChangeResult> wave::BroadcastOp::propagateBackward(
   return ChangeResult::Change;
 }
 
-llvm::FailureOr<ChangeResult> wave::BroadcastOp::propagateElementsPerThreadForward(
+llvm::FailureOr<ChangeResult>
+wave::BroadcastOp::propagateElementsPerThreadForward(
     llvm::ArrayRef<ElementsPerThreadLatticeValue> operandElements,
     llvm::MutableArrayRef<ElementsPerThreadLatticeValue> resultElements,
     llvm::raw_ostream &errs, const ElementsPerThreadInit &init) {
@@ -2068,9 +2069,8 @@ llvm::FailureOr<ChangeResult> wave::BroadcastOp::propagateElementsPerThreadForwa
     if (llvm::cast<WaveSymbolAttr>(attr) == init.threadXDimension)
       return ChangeResult::NoChange;
   }
-  return detail::identityElementsPerThreadPropagate(operandElements,
-                                                    resultElements, "operands",
-                                                    "results", errs);
+  return detail::identityElementsPerThreadPropagate(
+      operandElements, resultElements, "operands", "results", errs);
 }
 
 llvm::FailureOr<ChangeResult>
